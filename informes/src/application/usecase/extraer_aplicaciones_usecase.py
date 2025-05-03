@@ -1,50 +1,59 @@
 import re
+from typing import List, Dict
 from informes.src.Domain.interface.lector_pdf_interface import LectorPDFInterface
-from datetime import datetime
 
 class ExtraerAplicacionesUseCase:
     def __init__(self, lector_pdf: LectorPDFInterface):
         self.lector_pdf = lector_pdf
 
-    def ejecutar(self, ruta_pdf: str) -> dict:
+    def ejecutar(self, ruta_pdf: str) -> List[Dict]:
         texto = self.lector_pdf.leer(ruta_pdf)
+        return self._extraer_aplicaciones(texto)
 
-        # Cliente
-        customer_id = re.search(r"Customer:?[\s']*(ECOSU\S+)", texto).group(1)
-        name_match = re.search(rf"{customer_id}\s+(.*?)\s+Ref:", texto)
-        name = name_match.group(1).strip() if name_match else "Nombre no encontrado"
-        reference = re.search(r"Ref:(.*?)\s+BW", texto).group(1).strip()
-        bandwidth = re.search(r"BW:(\S+)", texto).group(1)
-
-        # Periodo
-        start_match = re.search(r"Start:\s*(\d{2}/\d{2}/\d{2})", texto)
-        end_match = re.search(r"End:\s*(\d{2}/\d{2}/\d{2})", texto)
-        start = datetime.strptime(start_match.group(1), "%m/%d/%y").strftime("%Y-%m-%dT%H:%M:%S") if start_match else None
-        end = datetime.strptime(end_match.group(1), "%m/%d/%y").strftime("%Y-%m-%dT%H:%M:%S") if end_match else None
-
-        # tabla
+    def _extraer_aplicaciones(self, texto: str) -> List[Dict]:
         apps = []
-        matches = re.findall(r"([a-z0-9\-\+ ]+)\s+([\d\.]+(?: [KMG]?bps|[KMG]?bps))\s+([\d\.]+(?: [KMG]?bps|[KMG]?bps))\s+([\d\.]+(?: [KMG]?bps|[KMG]?bps))", texto, re.IGNORECASE)
+        matches = re.findall(
+            r"([a-zA-Z0-9\-\+ ]+)\s+"                         # nombre de la aplicación
+            r"([\d\.]+(?:\s)?(?:[KMG]?bps|[KMG]?BPS))\s+"     # tráfico entrada
+            r"([\d\.]+(?:\s)?(?:[KMG]?bps|[KMG]?BPS))\s+"     # tráfico salida
+            r"([\d\.]+(?:\s)?(?:[KMG]?bps|[KMG]?BPS))",       # tráfico total
+            texto,
+            re.IGNORECASE
+        )
+        print(f"[DEBUG] Matches encontrados: {len(matches)}")
 
-        for m in matches:
-            apps.append({
-                "application": m[0].strip(),
-                "in": m[1].strip(),
-                "out": m[2].strip(),
-                "total": m[3].strip()
-            })
+        for match in matches:
+            try:
+                apps.append({
+                    "application": match[0].strip(),
+                    "in": self._normalizar_ancho_banda(match[1]),
+                    "out": self._normalizar_ancho_banda(match[2]),
+                    "total": self._normalizar_ancho_banda(match[3])
+                })
+            except Exception as e:
+                print(f"[ERROR] Aplicación {match[0]} falló con error: {str(e)}")
+                continue
 
-        return {
-            "generated_at": re.search(r"Applications\s+(.*?)\n", texto).group(1).strip(),
-            "period": {
-                "start": start,
-                "end": end
-            },
-            "customer_info": {
-                "customer_id": customer_id,
-                "name": name,
-                "reference": reference,
-                "bandwidth": bandwidth
-            },
-            "applications": apps
-        }
+        return apps
+
+
+    def _normalizar_ancho_banda(self, valor: str) -> float:
+        valor = str(valor).strip().replace(" ", "").upper()
+        
+        match = re.match(r"([\d\.]+)([KMG]?BPS)", valor)
+        if not match:
+            raise ValueError(f"Formato no válido de ancho de banda: '{valor}'")
+
+        numero, sufijo = match.groups()
+        numero = float(numero)
+
+        if sufijo == "KBPS":
+            return numero * 1_000
+        elif sufijo == "MBPS":
+            return numero * 1_000_000
+        elif sufijo == "GBPS":
+            return numero * 1_000_000_000
+        elif sufijo == "BPS":
+            return numero
+        else:
+            raise ValueError(f"Unidad desconocida: {sufijo}")
